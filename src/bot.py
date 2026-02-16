@@ -104,7 +104,7 @@ async def check_active_games():
                 if last_known_game:
                     database.update_last_game(riot_id, None) 
                     
-                    await asyncio.sleep(10) 
+                    await asyncio.sleep(60) 
                     match = cleanup_and_get_match(puuid, last_known_game)
                     if match:
                          await notify_subscribers(subscribers, "end", riot_id, match=match, puuid=puuid)
@@ -225,10 +225,3 @@ def cleanup_and_get_match(puuid, game_id):
     except Exception:
         pass
     return None
-
-
-if __name__ == '__main__':
-    if DISCORD_TOKEN:
-        bot.run(DISCORD_TOKEN)
-    else:
-        print("Error: DISCORD_TOKEN not found in .env")
