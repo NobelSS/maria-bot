@@ -53,6 +53,9 @@ cover/
 # VS Code
 .vscode/
 
+# SQLite
+*.db
+
 # OS Generated
 .DS_Store
 Thumbs.db
