@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import asyncio
 import discord
 from discord.ext import commands, tasks
@@ -77,15 +78,30 @@ async def unsubscribe(ctx):
     else:
         await ctx.send(f"{ctx.author.mention} You were not subscribed.")
 
-local_active_games = {}
+pending_end_checks = {}
+MATCH_FETCH_DELAY = 120
+MATCH_FETCH_TIMEOUT = 600
 
 @tasks.loop(minutes=1)
 async def check_active_games():
     subscribers = database.get_subscribers()
-    if not subscribers and not database.get_all_users():
-        return
-        
     users = database.get_all_users()
+    if not users:
+        return
+
+    now = time.time()
+
+    for riot_id in list(pending_end_checks.keys()):
+        info = pending_end_checks[riot_id]
+        elapsed = now - info['ended_at']
+        if elapsed >= MATCH_FETCH_DELAY:
+            match = cleanup_and_get_match(info['puuid'], info['game_id'])
+            if match:
+                await notify_subscribers(subscribers, "end", riot_id, match=match, puuid=info['puuid'])
+                del pending_end_checks[riot_id]
+            elif elapsed >= MATCH_FETCH_TIMEOUT:
+                print(f"Giving up fetching end match for {riot_id} after {MATCH_FETCH_TIMEOUT}s")
+                del pending_end_checks[riot_id]
 
     for user in users:
         riot_id = user['riot_id']
@@ -94,20 +110,22 @@ async def check_active_games():
 
         try:
             game = riot.get_active_game(puuid)
-            
+
             if game:
                 game_id = str(game['gameId'])
                 if last_known_game != game_id:
                     database.update_last_game(riot_id, game_id)
                     await notify_subscribers(subscribers, "start", riot_id, game=game, puuid=puuid)
             else:
-                if last_known_game:
-                    database.update_last_game(riot_id, None) 
-                    
-                    await asyncio.sleep(60) 
-                    match = cleanup_and_get_match(puuid, last_known_game)
-                    if match:
-                         await notify_subscribers(subscribers, "end", riot_id, match=match, puuid=puuid)
+                # Game ended — queue a delayed match-data fetch
+                if last_known_game and riot_id not in pending_end_checks:
+                    database.update_last_game(riot_id, None)
+                    pending_end_checks[riot_id] = {
+                        'puuid': puuid,
+                        'game_id': last_known_game,
+                        'ended_at': now
+                    }
+                    print(f"{riot_id} game ended, will fetch results in {MATCH_FETCH_DELAY}s")
 
         except Exception as e:
             print(f"Error checking {riot_id}: {e}")
@@ -206,13 +224,36 @@ def create_game_end_embed(riot_id, match, puuid):
         return None
 
     win = participant['win']
-    kda = f"{participant['kills']}/{participant['deaths']}/{participant['assists']}"
+    kills = participant['kills']
+    deaths = participant['deaths']
+    assists = participant['assists']
+    kda = f"{kills}/{deaths}/{assists}"
     champion = participant['championName']
-    
-    embed = discord.Embed(title="🏁 Match Ended", color=0x00ff00 if win else 0xff0000)
+
+    cs = participant.get('totalMinionsKilled', 0) + participant.get('neutralMinionsKilled', 0)
+    damage = participant.get('totalDamageDealtToChampions', 0)
+    gold = participant.get('goldEarned', 0)
+    vision = participant.get('visionScore', 0)
+    game_duration_s = match['info'].get('gameDuration', 0)
+    minutes = game_duration_s // 60
+    seconds = game_duration_s % 60
+
+    kda_ratio = round((kills + assists) / max(deaths, 1), 2)
+
+    result_text = "Victory 🏆" if win else "Defeat 💀"
+    color = 0x00ff00 if win else 0xff0000
+
+    embed = discord.Embed(title="🏁 Match Ended", color=color)
     embed.description = f"**{riot_id}** just finished a match as **{champion}**!"
-    embed.add_field(name="Result", value="Victory" if win else "Defeat", inline=True)
-    embed.add_field(name="KDA", value=kda, inline=True)
+    embed.add_field(name="Result", value=result_text, inline=True)
+    embed.add_field(name="Duration", value=f"{minutes}m {seconds}s", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)  # spacer
+    embed.add_field(name="KDA", value=f"{kda} ({kda_ratio})", inline=True)
+    embed.add_field(name="CS", value=str(cs), inline=True)
+    embed.add_field(name="Vision Score", value=str(vision), inline=True)
+    embed.add_field(name="DMG to Champions", value=f"{damage:,}", inline=True)
+    embed.add_field(name="Gold Earned", value=f"{gold:,}", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)  # spacer
     return embed
 
 def cleanup_and_get_match(puuid, game_id):

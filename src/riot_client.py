@@ -1,27 +1,39 @@
-from riotwatcher import LolWatcher, ApiError
+from riotwatcher import LolWatcher, RiotWatcher, ApiError
 from .config import RIOT_API_KEY, DEFAULT_REGION, DEFAULT_ROUTING
 
 class RiotClient:
     def __init__(self):
         self.watcher = LolWatcher(RIOT_API_KEY)
+        self.riot_watcher = RiotWatcher(RIOT_API_KEY)
         self.region = DEFAULT_REGION
         self.routing = DEFAULT_ROUTING
 
     def get_account(self, game_name, tag_line):
         try:
-            return self.watcher.account.by_riot_id(self.routing, game_name, tag_line)
+            return self.riot_watcher.account.by_riot_id(self.routing, game_name, tag_line)
         except ApiError as err:
             if err.response.status_code == 404:
                 return None
             raise
 
     def get_summoner_by_puuid(self, puuid):
-        return self.watcher.summoner.by_puuid(self.region, puuid)
+        try:
+            return self.watcher.summoner.by_puuid(self.region, puuid)
+        except ApiError as err:
+            if err.response.status_code == 404:
+                return None
+            raise
 
     def get_active_game(self, puuid):
         try:
-            summoner = self.get_summoner_by_puuid(puuid)
-            return self.watcher.spectator.by_summoner(self.region, summoner['id'])
+            return self.watcher.spectator.by_puuid(self.region, puuid)
+        except AttributeError:
+            try:
+                return self.watcher.spectator.by_summoner(self.region, puuid)
+            except ApiError as err:
+                if err.response.status_code == 404:
+                    return None
+                raise
         except ApiError as err:
             if err.response.status_code == 404:
                 return None
