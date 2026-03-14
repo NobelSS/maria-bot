@@ -13,5 +13,5 @@ COPY . .
 # Expose port for the health-check web server
 EXPOSE 8000
 
-# Start the bot
-CMD ["python", "main.py"]
+# Start the bot (unbuffered so logs appear immediately in docker logs)
+CMD ["python", "-u", "main.py"]

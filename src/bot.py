@@ -154,65 +154,90 @@ async def notify_subscribers(subscribers, event_type, riot_id, **kwargs):
         except Exception as e:
             print(f"Error sending DM to {user_id}: {e}")
 
+QUEUE_NAMES = {
+    420: "Ranked Solo/Duo",
+    440: "Ranked Flex",
+    400: "Normal Draft",
+    430: "Normal Blind",
+    450: "ARAM",
+    700: "Clash",
+    900: "URF",
+    1020: "One for All",
+}
+
 def create_game_start_embed(riot_id, game, user_puuid):
     embed = discord.Embed(title="🎮 Match Started!", color=0x00ff00)
     embed.description = f"**{riot_id}** has started a match!"
-    
-    mode = game.get('gameMode', 'Unknown')
-    embed.add_field(name="Mode", value=mode, inline=True)
-    
+
+    queue_id = game.get('gameQueueConfigId', 0)
+    queue_name = QUEUE_NAMES.get(queue_id, game.get('gameMode', 'Unknown'))
+    embed.add_field(name="Mode", value=queue_name, inline=True)
+
     participants = game.get('participants', [])
-    
+
     user_team = None
-    
     for p in participants:
-         if p.get('puuid') == user_puuid:
-             user_team = p.get('teamId')
-             break
-    
+        if p.get('puuid') == user_puuid:
+            user_team = p.get('teamId')
+            break
+
     if user_team:
         opponents = [p for p in participants if p.get('teamId') != user_team]
         op_list = []
-        
+
         for op in opponents[:5]:
             try:
-                summ_id = op.get('summonerId')
-                name = op.get('summonerName', 'Unknown')
-                
                 is_bot = op.get('bot', False)
                 if is_bot:
                     continue
 
+                # Spectator V5: riotId for name, summonerId or PUUID for rank
+                riot_id_field = op.get('riotId', '')
+                name = riot_id_field.split('#')[0] if riot_id_field else op.get('summonerName', 'Unknown')
+                op_puuid = op.get('puuid')
+
+                rank_str = "Unranked"
+                win_rate_str = ""
+
+                summ_id = op.get('summonerId') or None
+
+                # Fallback: resolve summonerId via PUUID
+                if not summ_id and op_puuid:
+                    try:
+                        summoner = riot.get_summoner_by_puuid(op_puuid)
+                        if summoner:
+                            summ_id = summoner.get('id') or None
+                    except Exception as e:
+                        print(f"[rank] summoner lookup failed for {name}: {e}")
+
                 if summ_id:
-                    entries = riot.get_league_entries(summ_id)
-                    rank_str = "Unranked"
-                    win_rate_str = ""
-                    
-                    for entry in entries:
-                        if entry['queueType'] == 'RANKED_SOLO_5x5':
-                            tier = entry['tier']
-                            rank = entry['rank']
-                            wins = entry['wins']
-                            losses = entry['losses']
-                            total_games = wins + losses
-                            
-                            win_rate = 0
-                            if total_games > 0:
-                                win_rate = int((wins / total_games) * 100)
-                                
-                            rank_str = f"{tier} {rank}"
-                            win_rate_str = f"({win_rate}% WR)"
-                            break
-                    
-                    if win_rate_str:
-                        op_list.append(f"**{name}**: {rank_str} {win_rate_str}")
-                    else:
-                        op_list.append(f"**{name}**: {rank_str}") 
+                    try:
+                        entries = riot.get_league_entries(summ_id)
+                        for entry in entries:
+                            if entry['queueType'] == 'RANKED_SOLO_5x5':
+                                wins = entry['wins']
+                                losses = entry['losses']
+                                total_games = wins + losses
+                                win_rate = int((wins / total_games) * 100) if total_games > 0 else 0
+                                rank_str = f"{entry['tier'].capitalize()} {entry['rank']}"
+                                win_rate_str = f"({win_rate}% WR)"
+                                break
+                    except Exception as e:
+                        print(f"[rank] league entries failed for {name}: {e}")
                 else:
-                    op_list.append(f"**{name}**: Unknown")
-            except Exception:
-                op_list.append(f"**{op.get('summonerName', 'Unknown')}**: (Error)")
-        
+                    print(f"[rank] no summonerId found for {name} (PUUID: {op_puuid})")
+
+                line = f"**{name}**: {rank_str}"
+                if win_rate_str:
+                    line += f" {win_rate_str}"
+                op_list.append(line)
+
+            except Exception as e:
+                riot_id_field = op.get('riotId', '')
+                fallback = riot_id_field.split('#')[0] if riot_id_field else op.get('summonerName', 'Unknown')
+                print(f"[rank] unexpected error for {fallback}: {e}")
+                op_list.append(f"**{fallback}**: (Error)")
+
         if op_list:
             embed.add_field(name="Opponents", value="\n".join(op_list), inline=False)
 

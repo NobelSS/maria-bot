@@ -10,7 +10,7 @@ from src.riot_client import RiotClient
 from src import database
 
 # --- Configuration ---
-TEST_RIOT_ID = "TestID#IDID" 
+TEST_RIOT_ID = "ErrorUnknownName#NOPE" 
 
 async def test_database():
     print("\n--- Testing Database Functions ---")
@@ -53,20 +53,20 @@ async def test_database():
 
 async def test_riot_api():
     print("\n--- Testing Riot API Functions ---")
-    
+
     riot = RiotClient()
-    print(f"Region: {riot.region}, Routing: {riot.routing}")
+    print(f"Region: {riot.region}, Account routing: {riot.account_routing}, Match routing: {riot.match_routing}")
 
     if "TestID" in TEST_RIOT_ID:
         print("\n[WARNING] You are using a placeholder Riot ID.")
         return
-    
+
     if '#' not in TEST_RIOT_ID:
         print("\n[ERROR] Invalid format. Use Name#Tag")
         return
 
     name, tag = TEST_RIOT_ID.split('#')
-    
+
     # 1. Get Account (PUUID)
     print(f"\n1. get_account({name}, {tag})...")
     account = riot.get_account(name, tag)
@@ -83,9 +83,12 @@ async def test_riot_api():
     summoner = None
     try:
         summoner = riot.get_summoner_by_puuid(puuid)
-        print(f"   [DEBUG] Raw Summoner Data: {summoner}") 
+        if summoner:
+            print(f"   [PASS] Summoner ID: {summoner.get('id', 'N/A')}")
+        else:
+            print("   [FAIL] Summoner not found.")
     except Exception as e:
-        print(f"   [DEBUG] Error calling get_summoner_by_puuid: {e}")
+        print(f"   [DEBUG] Error: {e}")
 
     # 3. Get League Entries (Rank)
     if summoner and 'id' in summoner:
@@ -93,74 +96,87 @@ async def test_riot_api():
         print(f"\n3. get_league_entries({summoner_id})...")
         try:
             entries = riot.get_league_entries(summoner_id)
-            print(f"   [PASS] Entries found: {len(entries)}")
-            for entry in entries:
-                print(f"     - {entry['queueType']}: {entry['tier']} {entry['rank']}")
+            if entries:
+                print(f"   [PASS] Entries found: {len(entries)}")
+                for entry in entries:
+                    print(f"     - {entry['queueType']}: {entry['tier']} {entry['rank']} ({entry['wins']}W/{entry['losses']}L)")
+            else:
+                print("   [PASS] Unranked (no entries found)")
         except Exception as e:
             print(f"   [FAIL] Error fetching league entries: {e}")
     else:
-        print("\n3. Skipping League Entries (Summoner ID missing or not returned by API)")
+        print("\n3. Skipping League Entries (no summoner ID)")
 
-    # 4. Get Active Game
-    print(f"\n4. get_active_game(PUUID)...")
+    # 4. Check if currently IN GAME
+    print(f"\n4. Is {TEST_RIOT_ID} currently in a game?")
     try:
         game = riot.get_active_game(puuid)
         if game:
-            print(f"   [PASS] User is IN GAME: {game['gameMode']} ({game['gameType']})")
+            mode = game.get('gameMode', 'Unknown')
+            game_type = game.get('gameType', 'Unknown')
+            duration_s = game.get('gameLength', 0)
+            minutes = duration_s // 60
+            seconds = duration_s % 60
+            print(f"   [YES] Currently IN GAME!")
+            print(f"   Mode:     {mode} ({game_type})")
+            print(f"   Duration: {minutes}m {seconds}s so far")
+            # Find the tracked player's champion
+            for p in game.get('participants', []):
+                if p.get('puuid') == puuid:
+                    print(f"   Champion: {p.get('championId', 'Unknown')}")
+                    break
         else:
-            print("   [PASS] User is NOT in game.")
+            print(f"   [NO] {TEST_RIOT_ID} is NOT currently in a game.")
     except Exception as e:
-        print(f"   [INFO] API returned error (normal if not in game): {e}")
+        print(f"   [FAIL] Error checking active game: {e}")
 
-# 5. Get Match History
+    # 5. Get Match History
     print(f"\n5. get_match_history({puuid[:10]}...)...")
-    # Only pull the 1 latest match for this test
-    matches = riot.get_match_history(puuid, count=1) 
-    
+    try:
+        matches = riot.get_match_history(puuid, count=1)
+    except Exception as e:
+        print(f"   [FAIL] Error fetching match history: {e}")
+        return
+
     if not matches:
         print("   [FAIL] No matches found.")
         return
-        
+
     print(f"   [PASS] Latest Match ID: {matches[0]}")
-    
+
     # 6. Get Match Details & Stats
     match_id = matches[0]
     print(f"\n6. get_match_details({match_id})...")
-    details = riot.get_match_details(match_id)
-    
+    try:
+        details = riot.get_match_details(match_id)
+    except Exception as e:
+        print(f"   [FAIL] Error fetching match details: {e}")
+        return
+
     if details:
         game_duration_sec = details['info']['gameDuration']
-        # Riot API sometimes returns duration in milliseconds for older games 
-        # and seconds for newer games. This safely handles both:
-        if game_duration_sec > 10000: 
+        if game_duration_sec > 10000:
             game_duration_sec //= 1000
-            
+
         minutes = game_duration_sec // 60
         seconds = game_duration_sec % 60
-        
         print(f"   [PASS] Game Mode: {details['info']['gameMode']} ({minutes}m {seconds}s)")
-        
-        participants = details['info']['participants']
-        # Find the specific user's stats out of the 10 players
-        me = next((p for p in participants if p['puuid'] == puuid), None)
-        
+
+        me = next((p for p in details['info']['participants'] if p['puuid'] == puuid), None)
         if me:
             win_status = "VICTORY" if me['win'] else "DEFEAT"
             kills, deaths, assists = me['kills'], me['deaths'], me['assists']
-            # Prevent DivisionByZero errors for perfect games
-            kda_ratio = (kills + assists) / max(1, deaths) 
-            
-            # CS is total lane minions + total jungle monsters
+            kda_ratio = (kills + assists) / max(1, deaths)
             cs = me.get('totalMinionsKilled', 0) + me.get('neutralMinionsKilled', 0)
-            
+
             print("\n   --- LATEST MATCH STATS ---")
-            print(f"   Result:      {win_status}")
-            print(f"   Champion:    {me['championName']}")
-            print(f"   KDA:         {kills}/{deaths}/{assists} ({kda_ratio:.2f})")
-            print(f"   Damage:      {me.get('totalDamageDealtToChampions', 0):,}")
-            print(f"   CS:          {cs}")
-            print(f"   Vision:      {me.get('visionScore', 0)}")
-            print(f"   Gold:        {me.get('goldEarned', 0):,}")
+            print(f"   Result:   {win_status}")
+            print(f"   Champion: {me['championName']}")
+            print(f"   KDA:      {kills}/{deaths}/{assists} ({kda_ratio:.2f})")
+            print(f"   Damage:   {me.get('totalDamageDealtToChampions', 0):,}")
+            print(f"   CS:       {cs}")
+            print(f"   Vision:   {me.get('visionScore', 0)}")
+            print(f"   Gold:     {me.get('goldEarned', 0):,}")
             print("   --------------------------\n")
         else:
             print("   [FAIL] Could not find the player in the match data.")
